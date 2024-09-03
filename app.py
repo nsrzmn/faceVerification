@@ -2,13 +2,11 @@ import os
 import logging
 from flask import Flask, request, jsonify
 import cv2
-import pytesseract
-from pytesseract import Output
-from deepface import DeepFace
 import numpy as np
 import requests
 from io import BytesIO
 from PIL import Image
+from deepface import DeepFace
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,13 +15,10 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 
-# Configure Tesseract path if needed
-pytesseract.pytesseract.tesseract_cmd = '/usr/bin/tesseract'
-
 def download_image(url):
     try:
         response = requests.get(url)
-        response.raise_for_status()  # Raise HTTPError for bad responses
+        response.raise_for_status()
         img_data = BytesIO(response.content)
         img = Image.open(img_data)
         img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
@@ -33,19 +28,20 @@ def download_image(url):
         raise ValueError(f"Image at URL {url} could not be downloaded.")
 
 def auto_correct_orientation(image):
-    data = pytesseract.image_to_osd(image, output_type=Output.DICT)
-    angle = data.get('rotate', 0)
-    angle = angle if angle <= 180 else angle - 360
-    (h, w) = image.shape[:2]
-    center = (w // 2, h // 2)
-    abs_cos = abs(np.cos(np.radians(angle)))
-    abs_sin = abs(np.sin(np.radians(angle)))
-    bound_w = int(h * abs_sin + w * abs_cos)
-    bound_h = int(h * abs_cos + w * abs_sin)
-    M = cv2.getRotationMatrix2D(center, -angle, 1.0)
-    M[0, 2] += (bound_w - w) / 2
-    M[1, 2] += (bound_h - h) / 2
-    rotated_image = cv2.warpAffine(image, M, (bound_w, bound_h), flags=cv2.INTER_CUBIC)
+    # Simplified rotation correction or use any other method
+    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+    coords = np.column_stack(np.where(gray > 0))
+    angle = cv2.minAreaRect(coords)[-1]
+
+    if angle < -45:
+        angle = -(90 + angle)
+    else:
+        angle = -angle
+
+    center = (image.shape[1] // 2, image.shape[0] // 2)
+    M = cv2.getRotationMatrix2D(center, angle, 1.0)
+    rotated_image = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]), flags=cv2.INTER_CUBIC)
+
     return rotated_image
 
 def process_image(cnic_image_url, selfie_image_url):
@@ -67,7 +63,6 @@ def process_image(cnic_image_url, selfie_image_url):
         else:
             return "Faces do not match"
     finally:
-        # Clean up temporary files
         os.remove(cnic_temp_path)
         os.remove(selfie_temp_path)
 
@@ -93,6 +88,5 @@ def match_cnic_selfie():
         return jsonify({"error": str(e)}), 500
 
 if __name__ == "__main__":
-    # Get the port from the environment variable
     port = int(os.environ.get("PORT", 5000))
     app.run(host="0.0.0.0", port=port)
