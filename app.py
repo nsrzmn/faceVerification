@@ -61,7 +61,7 @@ def match_cnic_selfie():
     data = request.json
     cnic_image_url = data.get('cnic_image_url')
     selfie_image_url = data.get('selfie_image_url')
-    # cnic_image_url = "https://backendpinkgo.nexarsolutions.com/api/images/cnicSaqib-71443.jpeg"
+     # cnic_image_url = "https://backendpinkgo.nexarsolutions.com/api/images/cnicSaqib-71443.jpeg"
     # selfie_image_url = "https://backendpinkgo.nexarsolutions.com/api/images/saqi-11007.jpeg"
 
     if not cnic_image_url or not selfie_image_url:
