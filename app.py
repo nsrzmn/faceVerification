@@ -1,14 +1,13 @@
 import os
 import logging
-from flask import Flask, request, jsonify
-import cv2
 import numpy as np
 import requests
 from io import BytesIO
+from flask import Flask, request, jsonify
+import cv2
 from PIL import Image
 import tensorflow as tf
-from tensorflow.keras.applications.mobilenet import preprocess_input
-from sklearn.preprocessing import normalize
+from sklearn.metrics.pairwise import cosine_similarity
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -17,42 +16,37 @@ logger = logging.getLogger(__name__)
 # Initialize Flask app
 app = Flask(__name__)
 
-# Load TensorFlow Lite model
-model_path = 'mobilefacenet.tflite'
-interpreter = tf.lite.Interpreter(model_path=model_path)
+# Load TFLite model
+interpreter = tf.lite.Interpreter(model_path="mobilefacenet.tflite")
 interpreter.allocate_tensors()
 
-# Define TensorFlow Lite model input/output details
+# Get model input and output details
 input_details = interpreter.get_input_details()[0]
 output_details = interpreter.get_output_details()[0]
+
+
+def preprocess_image(image):
+    # Resize and normalize the image
+    image = cv2.resize(
+        image, (input_details['shape'][1], input_details['shape'][2]))
+    image = image / 255.0  # Normalize to [0, 1]
+    image = np.expand_dims(image, axis=0)  # Add batch dimension
+    image = image.astype(np.float32)  # Ensure type is float32
+    return image
+
 
 def download_image(url):
     try:
         response = requests.get(url)
         response.raise_for_status()
         img_data = BytesIO(response.content)
-        img = Image.open(img_data)
+        img = Image.open(img_data).convert("RGB")
         img = cv2.cvtColor(np.array(img), cv2.COLOR_RGB2BGR)
         return img
     except requests.RequestException as e:
         logger.error(f"Failed to download image from URL {url}: {e}")
         raise ValueError(f"Image at URL {url} could not be downloaded.")
 
-def preprocess_image(image):
-    image = cv2.resize(image, (112, 112))  # Resize to MobileFaceNet input size
-    image = image.astype(np.float32)
-    image = preprocess_input(image)  # MobileNet preprocessing
-    return image
-
-def get_embedding(image):
-    preprocessed_image = preprocess_image(image)
-    input_data = np.expand_dims(preprocessed_image, axis=0)
-    
-    interpreter.set_tensor(input_details['index'], input_data)
-    interpreter.invoke()
-    
-    embeddings = interpreter.get_tensor(output_details['index'])
-    return embeddings.flatten()
 
 def auto_correct_orientation(image):
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
@@ -66,32 +60,56 @@ def auto_correct_orientation(image):
 
     center = (image.shape[1] // 2, image.shape[0] // 2)
     M = cv2.getRotationMatrix2D(center, angle, 1.0)
-    rotated_image = cv2.warpAffine(image, M, (image.shape[1], image.shape[0]), flags=cv2.INTER_CUBIC)
+    rotated_image = cv2.warpAffine(
+        image, M, (image.shape[1], image.shape[0]), flags=cv2.INTER_CUBIC)
 
     return rotated_image
 
-def cosine_similarity(emb1, emb2):
-    emb1 = normalize([emb1])[0]
-    emb2 = normalize([emb2])[0]
-    return np.dot(emb1, emb2)
 
 def process_image(cnic_image_url, selfie_image_url):
     cnic_image = download_image(cnic_image_url)
     selfie_image = download_image(selfie_image_url)
-    rotated_cnic_image = auto_correct_orientation(cnic_image)
-    
-    cnic_embedding = get_embedding(rotated_cnic_image)
-    selfie_embedding = get_embedding(selfie_image)
 
-    similarity = cosine_similarity(cnic_embedding, selfie_embedding)
-    
-    # Define a threshold for face match (you might need to tune this)
-    threshold = 0.6
-    
-    if similarity >= threshold:
+    # Correct orientation of CNIC image
+    cnic_image = auto_correct_orientation(cnic_image)
+
+    # Preprocess images
+    cnic_image = preprocess_image(cnic_image)
+    selfie_image = preprocess_image(selfie_image)
+
+    # Perform face verification using TFLite model
+    interpreter.set_tensor(input_details['index'], cnic_image)
+    interpreter.invoke()
+    cnic_embedding = interpreter.get_tensor(output_details['index'])[0]
+
+    interpreter.set_tensor(input_details['index'], selfie_image)
+    interpreter.invoke()
+    selfie_embedding = interpreter.get_tensor(output_details['index'])[0]
+
+    # Debug: Check embeddings before normalization
+    logger.info(f"CNIC embedding (pre-norm): {cnic_embedding}")
+    logger.info(f"Selfie embedding (pre-norm): {selfie_embedding}")
+
+    # Normalize embeddings
+    cnic_embedding = cnic_embedding / np.linalg.norm(cnic_embedding)
+    selfie_embedding = selfie_embedding / np.linalg.norm(selfie_embedding)
+
+    # Debug: Check embeddings after normalization
+    logger.info(f"CNIC embedding (post-norm): {cnic_embedding}")
+    logger.info(f"Selfie embedding (post-norm): {selfie_embedding}")
+
+    # Calculate similarity
+    similarity = cosine_similarity([cnic_embedding], [selfie_embedding])[0][0]
+    logger.info(f"Similarity score: {similarity}")
+
+    # Use a more appropriate threshold based on model performance
+    threshold = 0.5  # Adjust as needed
+
+    if similarity > threshold:
         return f"Faces match. Similarity score: {similarity:.2f}"
     else:
         return f"Faces do not match. Similarity score: {similarity:.2f}"
+
 
 @app.route('/match', methods=['POST'])
 def match_cnic_selfie():
@@ -113,6 +131,7 @@ def match_cnic_selfie():
     except Exception as e:
         logger.error(f"An error occurred: {e}")
         return jsonify({"error": str(e)}), 500
+
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5000))
