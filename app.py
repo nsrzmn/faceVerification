@@ -6,7 +6,9 @@ import numpy as np
 import requests
 from io import BytesIO
 from PIL import Image
-from deepface import DeepFace
+import tensorflow as tf
+from tensorflow.keras.applications.mobilenet import preprocess_input
+from sklearn.preprocessing import normalize
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -14,6 +16,15 @@ logger = logging.getLogger(__name__)
 
 # Initialize Flask app
 app = Flask(__name__)
+
+# Load TensorFlow Lite model
+model_path = 'mobilefacenet.tflite'
+interpreter = tf.lite.Interpreter(model_path=model_path)
+interpreter.allocate_tensors()
+
+# Define TensorFlow Lite model input/output details
+input_details = interpreter.get_input_details()[0]
+output_details = interpreter.get_output_details()[0]
 
 def download_image(url):
     try:
@@ -27,8 +38,23 @@ def download_image(url):
         logger.error(f"Failed to download image from URL {url}: {e}")
         raise ValueError(f"Image at URL {url} could not be downloaded.")
 
+def preprocess_image(image):
+    image = cv2.resize(image, (112, 112))  # Resize to MobileFaceNet input size
+    image = image.astype(np.float32)
+    image = preprocess_input(image)  # MobileNet preprocessing
+    return image
+
+def get_embedding(image):
+    preprocessed_image = preprocess_image(image)
+    input_data = np.expand_dims(preprocessed_image, axis=0)
+    
+    interpreter.set_tensor(input_details['index'], input_data)
+    interpreter.invoke()
+    
+    embeddings = interpreter.get_tensor(output_details['index'])
+    return embeddings.flatten()
+
 def auto_correct_orientation(image):
-    # Simplified rotation correction or use any other method
     gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     coords = np.column_stack(np.where(gray > 0))
     angle = cv2.minAreaRect(coords)[-1]
@@ -44,27 +70,28 @@ def auto_correct_orientation(image):
 
     return rotated_image
 
+def cosine_similarity(emb1, emb2):
+    emb1 = normalize([emb1])[0]
+    emb2 = normalize([emb2])[0]
+    return np.dot(emb1, emb2)
+
 def process_image(cnic_image_url, selfie_image_url):
     cnic_image = download_image(cnic_image_url)
     selfie_image = download_image(selfie_image_url)
     rotated_cnic_image = auto_correct_orientation(cnic_image)
-    cnic_temp_path = "temp_cnic.jpg"
-    selfie_temp_path = "temp_selfie.jpg"
-    cv2.imwrite(cnic_temp_path, rotated_cnic_image)
-    cv2.imwrite(selfie_temp_path, selfie_image)
-    try:
-        result = DeepFace.verify(img1_path=cnic_temp_path, img2_path=selfie_temp_path)
-        if result['verified']:
-            analysis = DeepFace.analyze(img_path=selfie_temp_path, actions=['gender'])
-            if isinstance(analysis, list):
-                analysis = analysis[0]
-            gender = analysis['gender']
-            return f"Faces match. Detected gender: {gender}"
-        else:
-            return "Faces do not match"
-    finally:
-        os.remove(cnic_temp_path)
-        os.remove(selfie_temp_path)
+    
+    cnic_embedding = get_embedding(rotated_cnic_image)
+    selfie_embedding = get_embedding(selfie_image)
+
+    similarity = cosine_similarity(cnic_embedding, selfie_embedding)
+    
+    # Define a threshold for face match (you might need to tune this)
+    threshold = 0.6
+    
+    if similarity >= threshold:
+        return f"Faces match. Similarity score: {similarity:.2f}"
+    else:
+        return f"Faces do not match. Similarity score: {similarity:.2f}"
 
 @app.route('/match', methods=['POST'])
 def match_cnic_selfie():
@@ -80,7 +107,7 @@ def match_cnic_selfie():
         return jsonify({
             "res": {
                 "matched": "Faces match" in result,
-                "gender": "man" if "man" in result else "woman" if "woman" in result else None
+                "similarity_score": result
             }
         })
     except Exception as e:
