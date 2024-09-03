@@ -3,6 +3,12 @@ services:
     name: flask-app
     env: python
     buildCommand: |
+      apt-get update
+      apt-get install -y tesseract-ocr
+      echo "Tesseract Version:"
+      tesseract --version
+      echo "Current PATH:"
+      echo $PATH
       pip install -r requirements.txt
     startCommand: python app.py
-    plan: free  # or whatever plan you're using
+    plan: free # or whatever plan you're using
