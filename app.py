@@ -1,3 +1,5 @@
+import os
+from flask import Flask, request, jsonify
 import cv2
 import pytesseract
 from pytesseract import Output
@@ -6,15 +8,9 @@ import numpy as np
 import requests
 from io import BytesIO
 from PIL import Image
-from flask import Flask, request, jsonify
-import logging
-import os
 
 # Initialize Flask app
 app = Flask(__name__)
-
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 
 def download_image(url):
     response = requests.get(url)
@@ -60,10 +56,11 @@ def process_image(cnic_image_url, selfie_image_url):
     else:
         return "Faces do not match"
 
-# Flask route to process images
 @app.route('/match', methods=['POST'])
 def match_cnic_selfie():
     data = request.json
+    # cnic_image_url = data.get('cnic_image_url')
+    # selfie_image_url = data.get('selfie_image_url')
     cnic_image_url = "https://backendpinkgo.nexarsolutions.com/api/images/cnicSaqib-71443.jpeg"
     selfie_image_url = "https://backendpinkgo.nexarsolutions.com/api/images/saqi-11007.jpeg"
 
@@ -78,10 +75,11 @@ def match_cnic_selfie():
                 "gender": "man" if "man" in result else "woman" if "woman" in result else None
             }
         })
+
     except Exception as e:
-        logging.error("An error occurred", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
-if __name__ == '__main__':
-    port = int(os.environ.get('PORT', 5000))
-    app.run(host='0.0.0.0', port=port)
+if __name__ == "__main__":
+    # Get the port from the environment variable
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port)
